@@ -10,13 +10,10 @@ use std::io;
 use std::sync::mpsc;
 use std::thread;
 
-type ucool = usize;
-
 #[derive(Debug)]
 enum BSQError {
     IOError(io::Error),
     RecvError(mpsc::RecvError),
-    SendError(mpsc::SendError<Vec<u8>>),
     InvalidHeader,
     InvalidChar,
     InvalidCharFirstLine,
@@ -51,13 +48,6 @@ impl From<io::Error> for BSQError {
 impl From<mpsc::RecvError> for BSQError {
     fn from(e:mpsc::RecvError) -> Self {
         BSQError::RecvError(e)
-    }
-}
-
-//Allows for the ?; syntax on SendError producing functions
-impl From<mpsc::SendError<Vec<u8>>> for BSQError {
-    fn from(e:mpsc::SendError<Vec<u8>>) -> Self {
-        BSQError::SendError(e)
     }
 }
 
@@ -160,10 +150,12 @@ fn thread(
     -> Result<(), BSQError> {
 
     for _ in 1..info.height {
-        let mut data = vec!(0u8; info.width);
-        buf.read_exact(&mut data) ?;
+        //let mut data = vec!(0u8; info.width);
+        let mut data:Vec<u8> = Vec::with_capacity(info.width);
+        unsafe { data.set_len(info.width); }
 
-        read_endl(&mut buf)?;//assert_error(buf.read_byte()? == b'\n', BSQError::InvalidEndl)?;
+        buf.read_exact(&mut data) ?;
+        read_endl(&mut buf)?;
 
         sender.send(Ok(data)).unwrap();
     }
@@ -184,19 +176,18 @@ fn scan(file_name:String) -> Result<Solution, BSQError> {
     let mut best_sqr:Solution = Solution::default();
 
     //Base of the walking line algorithm
-    let mut current:Vec<usize> = vec![0; info.width];
+    let mut sizes:Vec<usize> = vec![0; info.width];
 
     //Scan first line
     for x in 0..info.width {
         if data[x] == info.char_empty {
-            current[x] = 1;
+            sizes[x] = 1;
             if best_sqr.score == 0 {
                 best_sqr = Solution::new(0, x, 1);
             }
         } else if data[x] == info.char_full {
-            current[x] = 0;
+            sizes[x] = 0;
         } else {
-            println!("{:?}", data[x]);
             return Err(BSQError::InvalidCharFirstLine);
         }
     }
@@ -224,16 +215,16 @@ fn scan(file_name:String) -> Result<Solution, BSQError> {
 
             if data[x] == info.char_empty {
                 //sc is previous score (x - 1, y), up is square just above (x, y - 1), prev_up is (x - 1, y - 1)
-                let up = current[x];
+                let up = sizes[x];
                 sc = min3(sc, prev_up, up) + 1;
-                current[x] = sc;
+                sizes[x] = sc;
                 prev_up = up;
                 if sc > best_sqr.score {
                     best_sqr =  Solution::new(y, x, sc);
                 }
             } else if data[x] == info.char_full {
-                //prev_up = current[x];
-                current[x] = 0;
+                //prev_up = sizes[x];
+                sizes[x] = 0;
                 sc = 0;
             } else {
                 return Err(BSQError::InvalidChar);
