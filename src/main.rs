@@ -7,9 +7,10 @@ use std::env;
 use std::io::BufRead;
 use std::io;
 
-use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 use std::thread;
+
+type ucool = usize;
 
 #[derive(Debug)]
 enum BSQError {
@@ -34,8 +35,8 @@ struct Solution {
 
 #[derive(Default, Clone, Copy, Debug)]
 struct Info {
-    bsq_width:usize,
-    bsq_height:usize,
+    width:usize,
+    height:usize,
     char_empty:u8,
     char_full:u8,
 }
@@ -94,6 +95,18 @@ fn check_eof(buf:&mut BufReader<File>) -> Result<(), BSQError> {
     }
 }
 
+fn read_endl(buf:&mut BufReader<File>) -> Result<(), BSQError> {
+
+    let mut data = vec![0; 1];
+
+    buf.read_exact(&mut data)?;
+
+    match data[0] {
+        b'\n' => return Ok(()),
+        _ => return Err(BSQError::InvalidEndl)
+    }
+}
+
 fn read_header(mut buf:&mut BufReader<File>) -> Result<(Info, Vec<u8>), BSQError> {
     let data = read_line(&mut buf)?;
 
@@ -112,7 +125,7 @@ fn read_header(mut buf:&mut BufReader<File>) -> Result<(Info, Vec<u8>), BSQError
     //Get characters
     let mut info = Info::default();
 
-    info.bsq_height = val;
+    info.height = val;
     info.char_empty = data[len];
     info.char_full = data[len + 1];
     //char_display = data[len + 2]
@@ -124,7 +137,7 @@ fn read_header(mut buf:&mut BufReader<File>) -> Result<(Info, Vec<u8>), BSQError
 
     assert_error(line.len() > 1, BSQError::EmptyLine)?;
 
-    info.bsq_width = line.len() - 1;
+    info.width = line.len() - 1;
 
     Ok((info, line))
 }
@@ -140,6 +153,24 @@ fn min3(a:usize, b:usize, c:usize) -> usize {
     return r;
 }
 
+fn thread(
+    mut buf:&mut BufReader<File>,
+    sender:& mpsc::SyncSender<Result<Vec<u8>, BSQError>>,
+    info:Info)
+    -> Result<(), BSQError> {
+
+    for _ in 1..info.height {
+        let mut data = vec!(0u8; info.width);
+        buf.read_exact(&mut data) ?;
+
+        read_endl(&mut buf)?;//assert_error(buf.read_byte()? == b'\n', BSQError::InvalidEndl)?;
+
+        sender.send(Ok(data)).unwrap();
+    }
+    check_eof(&mut buf) ?;
+    Ok(())
+}
+
 //Solve one bsq file, and return result or BSQError
 fn scan(file_name:String) -> Result<Solution, BSQError> {
 
@@ -153,10 +184,10 @@ fn scan(file_name:String) -> Result<Solution, BSQError> {
     let mut best_sqr:Solution = Solution::default();
 
     //Base of the walking line algorithm
-    let mut current:Vec<usize> = vec![0; info.bsq_width];
+    let mut current:Vec<usize> = vec![0; info.width];
 
     //Scan first line
-    for x in 0..info.bsq_width {
+    for x in 0..info.width {
         if data[x] == info.char_empty {
             current[x] = 1;
             if best_sqr.score == 0 {
@@ -169,37 +200,30 @@ fn scan(file_name:String) -> Result<Solution, BSQError> {
             return Err(BSQError::InvalidCharFirstLine);
         }
     }
-    assert_error(data[info.bsq_width] == b'\n', BSQError::InvalidEndl)?;
+    assert_error(data[info.width] == b'\n', BSQError::InvalidEndl)?;
 
 
     //Setup and launch the io thread
-    let (to_main, from_thread): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-    let (to_thread, from_main): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    let (to_main, from_thread) = mpsc::sync_channel(1);
 
-    thread::spawn(move || {
-        for _ in 1..info.bsq_height {
-            let mut data = from_main.recv().unwrap();
-            buf.read_exact(&mut data).unwrap();
-            to_main.send(data).unwrap();
+    thread::spawn(move ||
+        if let Err(e) = thread(&mut buf, &to_main, info) {
+            to_main.send(Err(e)).unwrap();
         }
-        check_eof(&mut buf).unwrap();
-    });
-
-    to_thread.send(data)?;
+    );
 
     //Read all lines
-    for y in 1..info.bsq_height {
+    for y in 1..info.height {
         let mut sc = 0;
         let mut prev_up = 0;
-        let data = from_thread.recv()?;
-        for x in 0..info.bsq_width {
+        //Return RecvError if recv failed then
+        //Return BSQError if thread failed
+        let data = from_thread.recv()??;
 
-            //if x >= read {
-            //    read += buf.read(&mut data[read..])?;
-            //}
+        for x in 0..info.width {
 
             if data[x] == info.char_empty {
-                //sc is previous score (x - 1), up is square just above (y - 1), prev_up is (x - 1, y - 1)
+                //sc is previous score (x - 1, y), up is square just above (x, y - 1), prev_up is (x - 1, y - 1)
                 let up = current[x];
                 sc = min3(sc, prev_up, up) + 1;
                 current[x] = sc;
@@ -208,18 +232,14 @@ fn scan(file_name:String) -> Result<Solution, BSQError> {
                     best_sqr =  Solution::new(y, x, sc);
                 }
             } else if data[x] == info.char_full {
-                prev_up = current[x];
+                //prev_up = current[x];
                 current[x] = 0;
                 sc = 0;
             } else {
                 return Err(BSQError::InvalidChar);
             }
         }
-        assert_error(data[info.bsq_width] == b'\n', BSQError::InvalidEndl)?;
-        to_thread.send(data)?;
     }
-
-    //check_eof(&mut buf)?; TODO check eof
 
     //Return value
     if best_sqr.score == 0 {
